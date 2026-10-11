@@ -1,0 +1,12 @@
+[project]
+name = "clickhouse-benchmarking"
+version = "0.1.0"
+description = "ClickHouse analytical queries benchmarking service"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.8.0",
+    "tabulate>=0.10.0",
+]

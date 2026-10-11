@@ -148,6 +148,8 @@ services:
       CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
       CLICKHOUSE_DATABASE: clients_transactions
     depends_on:
+      clickhouse:
+        condition: service_healthy
       clickhouse-init:
         condition: service_completed_successfully
       service-producer:
