@@ -1,4 +1,3 @@
--- Query 4: Top categories by US state
 SELECT
     us_state,
     cat_id,

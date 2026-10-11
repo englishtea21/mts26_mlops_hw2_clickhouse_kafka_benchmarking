@@ -1,4 +1,3 @@
--- Query 3: Transactions grouped by US state and gender
 SELECT
     us_state,
     gender,

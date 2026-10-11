@@ -1,4 +1,3 @@
--- Query 2: Total amount grouped by US state
 SELECT
     us_state,
     sum(amount) AS total_amount,

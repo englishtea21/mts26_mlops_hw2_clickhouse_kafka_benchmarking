@@ -1,4 +1,3 @@
--- Query 5: Monthly transactions by US state
 SELECT
     toYYYYMM(transaction_time) AS year_month,
     us_state,
