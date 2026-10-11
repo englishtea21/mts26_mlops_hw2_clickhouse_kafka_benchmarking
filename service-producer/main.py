@@ -11,6 +11,8 @@ from kafka import KafkaProducer
 
 import logging
 
+from tqdm import tqdm
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(message)s",
@@ -47,13 +49,13 @@ def send_to_kafka(cfg: ProducerConfig):
     try:
         df = pd.read_csv(cfg.data_path, parse_dates=["transaction_time"]).drop(
             columns=["target"], errors="ignore"
-        ).sample(1000)
+        )#.sample(1000)
         # имитация того, что транзакции прилетают последовательно,
         # ровно так, как и происходят в реальном мире
         df.sort_values(by="transaction_time", inplace=True)
         df = df.astype(str)
 
-        for row in df.to_dict(orient="records"):
+        for row in tqdm(df.to_dict(orient="records"), desc="Producing to Kafka..."):
             transaction_id = str(uuid.uuid4())
             message = {"transaction_id": transaction_id, **row}
             producer.send(cfg.kafka_topic, value=message)
