@@ -1,0 +1,142 @@
+#########
+# ЯКОРЯ #
+#########
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+x-transactions-topic-env: &transactions-topic-env
+  KAFKA_TRANSACTIONS_TOPIC: "${KAFKA_TRANSACTIONS_TOPIC}"
+x-clickhouse-minimal: &clickhouse-minimal
+  nofile:
+    soft: 262144
+    hard: 262144
+
+
+###########
+# СЕРВИСЫ #
+###########
+services:
+  zookeeper:
+    image: "${ZOOKEEPER_IMAGE}"
+    networks:
+      - transactions
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "${ZOOKEEPER_HOST_PORT}:2181"
+    logging: *logging
+
+  kafka:
+    image: "${KAFKA_IMAGE}"
+    depends_on:
+      - zookeeper
+    networks:
+      - transactions
+    ports:
+      - "${KAFKA_HOST_PORT}:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "${ZOOKEEPER_CONNECT}"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://${KAFKA_BROKERS},PLAINTEXT_HOST://${KAFKA_HOST_BROKERS}"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    logging: *logging
+
+  # Сервис для создания топиков при старте
+  kafka-setup:
+    image: "${KAFKA_IMAGE}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - transactions
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: |
+      "
+      echo 'Ожидание готовности Kafka...'
+      while ! kafka-topics --bootstrap-server ${KAFKA_BROKERS} --list; do
+        sleep 1
+      done
+
+      echo 'Создание топиков...'
+      kafka-topics --bootstrap-server ${KAFKA_BROKERS} --create --if-not-exists --topic ${KAFKA_TRANSACTIONS_TOPIC} --partitions 3 --replication-factor 1 --config retention.ms=604800000
+
+      echo 'Топики успешно созданы:'
+      kafka-topics --bootstrap-server ${KAFKA_BROKERS} --list
+      "
+
+  kafka-ui:
+    image: "${KAFKA_UI_IMAGE}"
+    depends_on:
+      - kafka
+    networks:
+      - transactions
+    ports:
+      - "${KAFKA_UI_PORT}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "${KAFKA_BROKERS}"
+      KAFKA_CLUSTERS_0_ZOOKEEPER: "${ZOOKEEPER_CONNECT}"
+    logging: *logging
+
+  clickhouse:
+    image: "${CLICKHOUSE_IMAGE}"
+    networks:
+      - transactions
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT}:9000"
+    environment:
+      CLICKHOUSE_DB: "clients_transactions"
+      CLICKHOUSE_HTTP_PORT: 8123
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
+    ulimits: *clickhouse-minimal
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  clickhouse-init:
+    build: ./clickhouse-init 
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - transactions
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_HTTP_PORT: 8123
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
+    logging: *logging
+
+  service-producer:
+    build: ./service-producer
+    networks:
+      - transactions
+    environment:
+      KAFKA_BROKERS: "${KAFKA_BROKERS}"
+      KAFKA_TRANSACTIONS_TOPIC: "${KAFKA_TRANSACTIONS_TOPIC}"
+      KAFKA_TRANSACTIONS_GROUP_ID: "${KAFKA_TRANSACTIONS_GROUP_ID}"
+    volumes:
+      - ./service-producer/raw_data:/app/raw_data:ro
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+
+networks:
+  transactions:
+    driver: bridge

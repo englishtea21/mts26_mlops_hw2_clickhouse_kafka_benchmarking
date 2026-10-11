@@ -22,18 +22,18 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "kafka-python", specifier = ">=3.0.11" },
+    { name = "kafka-python", specifier = "==2.2.6" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "uuid", specifier = ">=1.30" },
 ]
 
 [[package]]
 name = "kafka-python"
-version = "3.0.11"
+version = "2.2.6"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d5/6a/8a3bfb819b5350652dfa5365409b7c611eed8ae0b37c84f53d0a26ae9513/kafka_python-3.0.11.tar.gz", hash = "sha256:a003d927e79c801d6cfd1e59ceaaf78807351e75cdb5b8ee9ce4262586f9780f", size = 514717, upload-time = "2026-08-16T16:46:15.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/e1/e84f846614195c01c9e98db6e58bd18eaa7baaa01e78d95b0522d03e8c66/kafka_python-2.2.6.tar.gz", hash = "sha256:b18a15e614864afedd514cc75f203cc3555bb85b915326c9fce0e49a80ca441f", size = 345160, upload-time = "2025-05-08T20:08:29.507Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/9a/191343fd96564cbbed51bd33a53c08144e1ce285e2f10fb1578899e86c28/kafka_python-3.0.11-py3-none-any.whl", hash = "sha256:9d10cab4e11e02545d82c7e5af5702da5aa46dd4eccd11ad92a50bf6dbbecd14", size = 614237, upload-time = "2026-08-16T16:46:13.54Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/f4/fb2f88fa3ee67328f69c08e8e45591a5afb39c6d32b5e69f484a41d94a2d/kafka_python-2.2.6-py2.py3-none-any.whl", hash = "sha256:bacc5b00ddcfd79a33d761553dbf3e262389865432b51310e12399fac66f3c99", size = 308239, upload-time = "2025-05-08T20:08:19.947Z" },
 ]
 
 [[package]]

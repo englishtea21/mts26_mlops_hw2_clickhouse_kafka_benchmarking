@@ -10,3 +10,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Volumes folders
+.kafka_data
+.clickhouse_data
+.clickhouse_logs
+
+/service-producer/raw_data
