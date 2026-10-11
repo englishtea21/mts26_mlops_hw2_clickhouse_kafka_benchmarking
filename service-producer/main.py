@@ -47,7 +47,7 @@ def send_to_kafka(cfg: ProducerConfig):
     try:
         df = pd.read_csv(cfg.data_path, parse_dates=["transaction_time"]).drop(
             columns=["target"], errors="ignore"
-        )
+        ).sample(1000)
         # имитация того, что транзакции прилетают последовательно,
         # ровно так, как и происходят в реальном мире
         df.sort_values(by="transaction_time", inplace=True)
@@ -58,7 +58,7 @@ def send_to_kafka(cfg: ProducerConfig):
             message = {"transaction_id": transaction_id, **row}
             producer.send(cfg.kafka_topic, value=message)
             logger.info(f"SENT: {transaction_id=}")
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
         producer.flush()
     except Exception as e:

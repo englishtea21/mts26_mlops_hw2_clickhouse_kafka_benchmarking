@@ -25,7 +25,7 @@ if ! curl -s -f -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" "http://$CLICKHOUSE_H
     exit 1
 fi
 
-for sql_file in "$SQL_DIR"/01_create_table.sql "$SQL_DIR"/02_kafka_engine.sql "$SQL_DIR"/03_materialized_view.sql; do
+for sql_file in "$SQL_DIR"/01_create_table_slow.sql "$SQL_DIR"/01_create_table_fast.sql "$SQL_DIR"/02_kafka_engine_slow.sql "$SQL_DIR"/02_kafka_engine_fast.sql "$SQL_DIR"/03_materialized_view_slow.sql "$SQL_DIR"/03_materialized_view_fast.sql; do
     if [[ -f "$sql_file" ]]; then
         echo "Выполнение $sql_file..."
         if curl -s -f -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \

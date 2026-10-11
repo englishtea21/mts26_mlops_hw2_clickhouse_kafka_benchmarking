@@ -16,3 +16,5 @@ wheels/
 .clickhouse_logs
 
 /service-producer/raw_data
+
+/analytics-results/

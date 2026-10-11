@@ -108,7 +108,7 @@ services:
     logging: *logging
 
   clickhouse-init:
-    build: ./clickhouse-init 
+    build: ./service-clickhouse-init 
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -136,6 +136,24 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
+
+  clickhouse-benchmarking:
+    build: ./service-clickhouse-benchmarking
+    networks:
+      - transactions
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
+      CLICKHOUSE_DATABASE: clients_transactions
+    depends_on:
+      clickhouse-init:
+        condition: service_completed_successfully
+      service-producer:
+        condition: service_completed_successfully
+    volumes:
+      - ./analytics-results:/app/analytics-results
 
 networks:
   transactions:
