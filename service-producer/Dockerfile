@@ -27,4 +27,4 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-CMD ["python", "run", "main.py"]
+CMD ["python", "./main.py"]

@@ -9,6 +9,14 @@ import pandas as pd
 import pathlib
 from kafka import KafkaProducer
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 def _get_env(name: str) -> str:
     value = os.getenv(name)
@@ -43,11 +51,14 @@ def send_to_kafka(cfg: ProducerConfig):
         # имитация того, что транзакции прилетают последовательно,
         # ровно так, как и происходят в реальном мире
         df.sort_values(by="transaction_time", inplace=True)
+        df = df.astype(str)
 
         for row in df.to_dict(orient="records"):
-            message = {"transaction_id": str(uuid.uuid4()), "data": row}
+            transaction_id = str(uuid.uuid4())
+            message = {"transaction_id": transaction_id, **row}
             producer.send(cfg.kafka_topic, value=message)
-            time.sleep(0.01)
+            logger.info(f"SENT: {transaction_id=}")
+            time.sleep(0.1)
 
         producer.flush()
     except Exception as e:
