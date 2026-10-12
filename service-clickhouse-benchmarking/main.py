@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import os
 import re
-import time
 import json
+import time
+import random
 import logging
 import statistics
 from pathlib import Path
@@ -35,8 +36,9 @@ class BenchmarkConfig:
     results_dir: Path = Path("analytics-results")
     csvs_dir: Path = Path("analytics-results/csvs")
 
-    query_limit: int = 10
-    repetitions: int = int(os.getenv("BENCHMARK_REPETITIONS", "10"))
+    query_limit: int = 5
+    repetitions: int = 40
+    warmup_runs: int = 3
 
 
 @dataclass
@@ -55,34 +57,58 @@ class QueryResult:
     error: Optional[str] = None
 
     @property
-    def execution_times(self) -> List[float]:
+    def client_times(self) -> List[float]:
         return [r.execution_time_ms for r in self.runs]
 
     @property
     def mean_time(self) -> float:
-        return statistics.mean(self.execution_times) if self.execution_times else 0.0
+        return statistics.mean(self.client_times) if self.client_times else 0.0
 
     @property
     def median_time(self) -> float:
-        return statistics.median(self.execution_times) if self.execution_times else 0.0
+        return statistics.median(self.client_times) if self.client_times else 0.0
+
+    @property
+    def p90_time(self) -> float:
+        if not self.client_times:
+            return 0.0
+        return float(np.percentile(self.client_times, 90))
+
+    @property
+    def p95_time(self) -> float:
+        if not self.client_times:
+            return 0.0
+        return float(np.percentile(self.client_times, 95))
 
     @property
     def stdev_time(self) -> float:
-        return statistics.stdev(self.execution_times) if len(self.execution_times) > 1 else 0.0
+        return statistics.stdev(self.client_times) if len(self.client_times) > 1 else 0.0
 
     @property
     def ci95_low(self) -> float:
-        if len(self.execution_times) < 2:
+        if len(self.client_times) < 2:
             return self.mean_time
-        sem = self.stdev_time / (len(self.execution_times) ** 0.5)
+        sem = self.stdev_time / (len(self.client_times) ** 0.5)
         return self.mean_time - 1.96 * sem
 
     @property
     def ci95_high(self) -> float:
-        if len(self.execution_times) < 2:
+        if len(self.client_times) < 2:
             return self.mean_time
-        sem = self.stdev_time / (len(self.execution_times) ** 0.5)
+        sem = self.stdev_time / (len(self.client_times) ** 0.5)
         return self.mean_time + 1.96 * sem
+
+    @property
+    def median_rows_read(self) -> int:
+        if not self.runs:
+            return 0
+        return int(statistics.median([r.rows_read for r in self.runs]))
+
+    @property
+    def median_bytes_read(self) -> int:
+        if not self.runs:
+            return 0
+        return int(statistics.median([r.bytes_read for r in self.runs]))
 
 
 @dataclass
@@ -201,58 +227,156 @@ def load_query_scripts(scripts_dir: Path) -> Dict[str, str]:
     return scripts
 
 
-def execute_query(
+def wait_for_data(
     client: ClickHouseHttpClient,
-    query: str,
-    table_name: str,
-    query_name: str,
-    limit: int,
-    repetitions: int,
-) -> QueryResult:
-    formatted_query = query.replace("PLACEHOLDER", table_name)
-    preview_query = f"{formatted_query} LIMIT {limit}"
+    tables: List[str],
+    max_wait: int = 300,
+    poll_interval: int = 5,
+    stable_rounds: int = 3,
+) -> bool:
+    """Wait until Kafka data is fully replicated into all destination tables.
 
-    runs: List[QueryRun] = []
+    Previous implementation queried a non-existent ``lag`` column of
+    ``system.kafka_consumers`` and ignored the ``tables`` argument, so it
+    either returned immediately on an empty ``kafka_consumers`` snapshot
+    (zero rows ingested yet) or always hit the timeout.
 
-    for i in range(repetitions):
-        start_time = time.perf_counter()
+    New logic polls ``SELECT count()`` on the destination MergeTree tables
+    (the ``tables`` discovered for benchmarking, filled via Kafka Engine +
+    Materialized View) and returns only when:
+      * every table holds > 0 rows,
+      * counts are equal across tables (each consumer group read the topic fully),
+      * counts are stable for ``stable_rounds`` consecutive polls.
+    """
+    if not tables:
+        logger.warning("wait_for_data: no tables to wait for, skipping")
+        return False
+
+    logger.info(f"Waiting for Kafka data in {len(tables)} tables: {', '.join(tables)}...")
+    start_time = time.time()
+    stable_polls = 0
+    last_counts: Dict[str, int] = {}
+
+    while time.time() - start_time < max_wait:
+        elapsed = time.time() - start_time
         try:
-            _, stats = client.execute_with_stats(formatted_query)
-            elapsed = (time.perf_counter() - start_time) * 1000
-            runs.append(QueryRun(
-                execution_time_ms=round(elapsed, 2),
-                rows_read=stats["rows_read"],
-                bytes_read=stats["bytes_read"],
-            ))
-            logger.info(f"  run {i+1}/{repetitions}: {elapsed:.1f} ms")
+            counts: Dict[str, int] = {}
+            for table_name in tables:
+                rows = client.execute(f"SELECT count() FROM {table_name}")
+                counts[table_name] = int(rows[0][0]) if rows else 0
+
+            counts_str = ", ".join(f"{t}={c}" for t, c in counts.items())
+            logger.info(f"  [{elapsed:.0f}s] rows: {counts_str}")
+
+            values = list(counts.values())
+            if all(v > 0 for v in values) and len(set(values)) == 1:
+                if last_counts == counts:
+                    stable_polls += 1
+                else:
+                    stable_polls = 1
+                last_counts = counts
+                if stable_polls >= stable_rounds:
+                    logger.info(
+                        f"All Kafka messages consumed: "
+                        f"each table holds {values[0]} rows "
+                        f"(stable for {stable_polls} polls)"
+                    )
+                    return True
+            else:
+                stable_polls = 0
+                last_counts = counts
         except Exception as e:
-            logger.error(f"  run {i+1}/{repetitions} failed: {e}")
-            return QueryResult(
-                query_name=query_name,
-                table_name=table_name,
-                error=str(e),
-            )
+            logger.info(f"  [{elapsed:.0f}s] tables not ready yet: {e}")
+            stable_polls = 0
 
-    try:
-        preview_data, col_names = client.execute_with_names(preview_query)
-        if preview_data and col_names:
-            result_df = pd.DataFrame(preview_data, columns=col_names)
-        else:
-            result_df = pd.DataFrame()
-    except Exception:
-        result_df = pd.DataFrame()
+        time.sleep(poll_interval)
 
-    logger.info(
-        f"  {query_name} on {table_name}: "
-        f"mean={statistics.mean([r.execution_time_ms for r in runs]):.1f} ms"
+    logger.warning(
+        f"Timeout waiting for Kafka consumption after {max_wait}s "
+        f"(last counts: {last_counts})"
     )
+    return False
 
-    return QueryResult(
-        query_name=query_name,
-        table_name=table_name,
-        runs=runs,
-        result_df=result_df,
-    )
+
+def run_benchmarks(
+    client: ClickHouseHttpClient,
+    tables: List[str],
+    scripts: Dict[str, str],
+    cfg: BenchmarkConfig,
+) -> List[TableReport]:
+    """Run interleaved benchmarks with randomized table order per round."""
+    rng = random.Random(42)
+
+    wait_for_data(client, tables)
+
+    table_reports: List[TableReport] = []
+    for table_name in tables:
+        schema = get_table_schema(client, table_name)
+        table_reports.append(TableReport(table_name=table_name, table_schema=schema))
+
+    for table_name in tables:
+        count = client.execute(f"SELECT count() FROM {table_name}")
+        logger.info(f"Table {table_name}: {count[0][0]} rows")
+
+    for query_name, query_sql in scripts.items():
+        logger.info(f"\nBenchmarking query: {query_name}")
+
+        # Warmup
+        logger.info(f"  Warming up ({cfg.warmup_runs} runs per table)...")
+        for table_name in tables:
+            formatted = query_sql.replace("PLACEHOLDER", table_name)
+            for _ in range(cfg.warmup_runs):
+                try:
+                    client.execute_with_stats(formatted)
+                except Exception:
+                    pass
+
+        # Collect runs
+        runs_by_table: Dict[str, List[QueryRun]] = {t: [] for t in tables}
+
+        for rep in range(cfg.repetitions):
+            round_tables = tables.copy()
+            rng.shuffle(round_tables)
+
+            for table_name in round_tables:
+                formatted = query_sql.replace("PLACEHOLDER", table_name)
+
+                start = time.perf_counter()
+                try:
+                    _, stats = client.execute_with_stats(formatted)
+                    elapsed = (time.perf_counter() - start) * 1000
+                except Exception as e:
+                    logger.error(f"  {table_name} run {rep+1} failed: {e}")
+                    continue
+
+                runs_by_table[table_name].append(QueryRun(
+                    execution_time_ms=round(elapsed, 2),
+                    rows_read=stats["rows_read"],
+                    bytes_read=stats["bytes_read"],
+                ))
+                logger.info(f"  {table_name} run {rep+1}/{cfg.repetitions}: {elapsed:.1f} ms")
+
+        # Build QueryResult objects for this query
+        for table_report in table_reports:
+            table_name = table_report.table_name
+            runs = runs_by_table.get(table_name, [])
+
+            formatted = query_sql.replace("PLACEHOLDER", table_name)
+            try:
+                preview_data, col_names = client.execute_with_names(f"{formatted} LIMIT {cfg.query_limit}")
+                result_df = pd.DataFrame(preview_data, columns=col_names) if preview_data and col_names else pd.DataFrame()
+            except Exception:
+                result_df = pd.DataFrame()
+
+            if runs:
+                table_report.results.append(QueryResult(
+                    query_name=query_name,
+                    table_name=table_name,
+                    runs=runs,
+                    result_df=result_df,
+                ))
+
+    return table_reports
 
 
 def save_csv_result(result: QueryResult, csvs_dir: Path) -> Path:
@@ -292,7 +416,7 @@ def generate_scatter_plots(
         fig, ax = plt.subplots(figsize=(12, 7))
 
         for idx, result in enumerate(results_for_query):
-            times = result.execution_times
+            times = result.client_times
             color = colors[idx]
 
             jitter = np.random.uniform(-0.12, 0.12, size=len(times))
@@ -412,16 +536,15 @@ def generate_markdown_report(
                     f"- Runs: {len(result.runs)}\n"
                     f"- Mean: {result.mean_time:.2f} ms\n"
                     f"- Median: {result.median_time:.2f} ms\n"
+                    f"- P90: {result.p90_time:.2f} ms\n"
+                    f"- P95: {result.p95_time:.2f} ms\n"
                     f"- Std Dev: {result.stdev_time:.2f} ms\n"
                     f"- 95% CI: [{result.ci95_low:.2f}, {result.ci95_high:.2f}] ms\n"
-                    f"- Min: {min(result.execution_times):.2f} ms\n"
-                    f"- Max: {max(result.execution_times):.2f} ms\n"
-                    f"- Rows Read: {result.runs[-1].rows_read}\n"
-                    f"- Bytes Read: {result.runs[-1].bytes_read}\n\n"
+                    f"- Min: {min(result.client_times):.2f} ms\n"
+                    f"- Max: {max(result.client_times):.2f} ms\n"
+                    f"- Rows Read (median): {result.median_rows_read}\n"
+                    f"- Bytes Read (median): {result.median_bytes_read}\n\n"
                 )
-                f.write("```\n")
-                f.write(f"{result.execution_times}\n")
-                f.write("```\n\n")
 
                 if not result.result_df.empty:
                     f.write(result.result_df.to_markdown(index=False))
@@ -429,7 +552,7 @@ def generate_markdown_report(
 
             f.write("---\n\n")
 
-        f.write("## Summary (ms)\n\n")
+        f.write("## Summary (median ms)\n\n")
         summary_data = []
         for report in table_reports:
             row = {"Table": report.table_name.split(".")[-1]}
@@ -437,7 +560,10 @@ def generate_markdown_report(
                 if result.error:
                     row[result.query_name] = "ERROR"
                 else:
-                    row[result.query_name] = f"{result.mean_time:.2f} ± {result.ci95_high - result.mean_time:.2f}"
+                    row[result.query_name] = (
+                        f"{result.median_time:.2f} "
+                        f"[{result.ci95_low:.2f}, {result.ci95_high:.2f}]"
+                    )
             summary_data.append(row)
 
         if summary_data:
@@ -486,20 +612,10 @@ def main():
         logger.error("No SQL scripts found")
         return 1
 
-    table_reports = []
-    for table_name in tables:
-        logger.info(f"\nBenchmarking: {table_name}")
-        schema = get_table_schema(client, table_name)
-        table_report = TableReport(table_name=table_name, table_schema=schema)
+    table_reports = run_benchmarks(client, tables, scripts, cfg)
 
-        for query_name, query_sql in scripts.items():
-            result = execute_query(
-                client, query_sql, table_name, query_name, cfg.query_limit, cfg.repetitions
-            )
-            table_report.results.append(result)
-            csv_path = save_csv_result(result, cfg.csvs_dir)
-
-        table_reports.append(table_report)
+    for result in [r for tr in table_reports for r in tr.results]:
+        save_csv_result(result, cfg.csvs_dir)
 
     chart_paths = generate_scatter_plots(table_reports, cfg.repetitions, cfg.results_dir)
     generate_markdown_report(table_reports, chart_paths, cfg.repetitions, cfg.results_dir)
