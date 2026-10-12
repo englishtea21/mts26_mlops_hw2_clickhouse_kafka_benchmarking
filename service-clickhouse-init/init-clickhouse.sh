@@ -28,7 +28,7 @@ fi
 for sql_file in "$SQL_DIR"/01_create_table_slow.sql "$SQL_DIR"/01_create_table_fast.sql "$SQL_DIR"/02_kafka_engine_slow.sql "$SQL_DIR"/02_kafka_engine_fast.sql "$SQL_DIR"/03_materialized_view_slow.sql "$SQL_DIR"/03_materialized_view_fast.sql; do
     if [[ -f "$sql_file" ]]; then
         echo "Выполнение $sql_file..."
-        if curl -s -f -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
+        if curl -f -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
             "http://$CLICKHOUSE_HOST:$CLICKHOUSE_PORT/" \
             --data-binary @"$sql_file"; then
             echo "Успешно: $sql_file"
