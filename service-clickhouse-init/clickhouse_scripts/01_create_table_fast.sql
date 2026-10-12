@@ -19,4 +19,5 @@ CREATE TABLE IF NOT EXISTS clients_transactions.transactions_fast_for_us_state (
     merchant_lat Float64,
     merchant_lon Float64
 ) ENGINE = MergeTree() PARTITION BY toYYYYMM(transaction_time)
-ORDER BY (us_state, transaction_time) SETTINGS index_granularity = 8192;
+ORDER BY (us_state, transaction_time) SETTINGS index_granularity = 8192,
+    optimize_aggregation_in_order = 1;
