@@ -17,4 +17,4 @@ wheels/
 
 /service-producer/raw_data
 
-/analytics-results/
+/analytics-results/csvs/

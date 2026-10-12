@@ -18,9 +18,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import t as t_dist
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
+
+
+def t_critical_975(df: int) -> float:
+    """Two-sided 95% critical value t(df, 0.975) via scipy."""
+    if df < 1:
+        raise ValueError(f"df must be >= 1, got {df}")
+    return float(t_dist.ppf(0.975, df))
 
 
 @dataclass(frozen=True)
@@ -85,18 +93,24 @@ class QueryResult:
         return statistics.stdev(self.client_times) if len(self.client_times) > 1 else 0.0
 
     @property
+    def _ci95_halfwidth(self) -> float:
+        n = len(self.client_times)
+        if n < 2:
+            return 0.0
+        sem = self.stdev_time / (n ** 0.5)
+        return t_critical_975(n - 1) * sem
+
+    @property
     def ci95_low(self) -> float:
         if len(self.client_times) < 2:
             return self.mean_time
-        sem = self.stdev_time / (len(self.client_times) ** 0.5)
-        return self.mean_time - 1.96 * sem
+        return self.mean_time - self._ci95_halfwidth
 
     @property
     def ci95_high(self) -> float:
         if len(self.client_times) < 2:
             return self.mean_time
-        sem = self.stdev_time / (len(self.client_times) ** 0.5)
-        return self.mean_time + 1.96 * sem
+        return self.mean_time + self._ci95_halfwidth
 
     @property
     def median_rows_read(self) -> int:
@@ -363,9 +377,10 @@ def run_benchmarks(
 
             formatted = query_sql.replace("PLACEHOLDER", table_name)
             try:
-                preview_data, col_names = client.execute_with_names(f"{formatted} LIMIT {cfg.query_limit}")
-                result_df = pd.DataFrame(preview_data, columns=col_names) if preview_data and col_names else pd.DataFrame()
-            except Exception:
+                full_data, col_names = client.execute_with_names(formatted)
+                result_df = pd.DataFrame(full_data, columns=col_names) if full_data and col_names else pd.DataFrame()
+            except Exception as e:
+                logger.warning(f"  {table_name} full result fetch failed: {e}")
                 result_df = pd.DataFrame()
 
             if runs:
@@ -380,9 +395,11 @@ def run_benchmarks(
 
 
 def save_csv_result(result: QueryResult, csvs_dir: Path) -> Path:
+    """Save the FULL query result (no LIMIT) to CSV."""
     safe_table = result.table_name.replace(".", "_")
     filepath = csvs_dir / f"{safe_table}_{result.query_name}.csv"
     result.result_df.to_csv(filepath, index=False)
+    logger.info(f"CSV saved: {filepath.name} ({len(result.result_df)} rows)")
     return filepath
 
 
@@ -512,6 +529,7 @@ def generate_markdown_report(
     chart_paths: List[Path],
     repetitions: int,
     results_dir: Path,
+    preview_limit: int = 10,
 ) -> Path:
     report_path = results_dir / "benchmark_report.md"
 
@@ -547,8 +565,14 @@ def generate_markdown_report(
                 )
 
                 if not result.result_df.empty:
-                    f.write(result.result_df.to_markdown(index=False))
+                    f.write(result.result_df.head(preview_limit).to_markdown(index=False))
                     f.write("\n\n")
+                    if len(result.result_df) > preview_limit:
+                        f.write(
+                            f"_Показаны первые {preview_limit} из "
+                            f"{len(result.result_df)} строк, "
+                            f"полный результат — в `csvs/`._\n\n"
+                        )
 
             f.write("---\n\n")
 
@@ -618,7 +642,7 @@ def main():
         save_csv_result(result, cfg.csvs_dir)
 
     chart_paths = generate_scatter_plots(table_reports, cfg.repetitions, cfg.results_dir)
-    generate_markdown_report(table_reports, chart_paths, cfg.repetitions, cfg.results_dir)
+    generate_markdown_report(table_reports, chart_paths, cfg.repetitions, cfg.results_dir, cfg.query_limit)
 
     logger.info("\nDone")
     return 0
